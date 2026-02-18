@@ -28,6 +28,7 @@
 #include"util.h"
 #include"wmbus.h"
 #include"dvparser.h"
+#include"xmq.h"
 
 #include<string.h>
 #include<set>
@@ -42,6 +43,7 @@ bool verbose_ = false;
     X(dynamic_loading)                        \
     X(crc)            \
     X(dvparser)       \
+    X(ixmlparser)      \
     X(devices)        \
     X(linkmodes)      \
     X(ids)            \
@@ -200,6 +202,27 @@ bool tst_parse(const char *data, std::map<std::string,std::pair<int,DVEntry>> *d
     return b;
 }
 
+bool tst_ixmlparse(const char *hex, const char *grammar, std::map<std::string,std::pair<int,DVEntry>> *dv_entries, int testnr)
+{
+    debug("\n\nTest ixml parse nr %d......\n\n", testnr);
+    bool b;
+    XMQDoc *ixml = xmqNewDoc();
+    b = xmqParseBufferWithType(ixml, grammar, NULL, NULL, XMQ_CONTENT_IXML, 0);
+    if (!b) {
+        fprintf(stderr, "Failed to parse IXML grammar: %s\n", grammar);
+        return false;
+    }
+
+    string data(hex);
+    b = parseWithIXML(data, ixml, dv_entries);
+    if (!b) {
+        fprintf(stderr, "Failed to parse %s using IXML grammar: %s\n", hex, grammar);
+        return false;
+    }
+
+    return b;
+}
+
 void tst_double(map<string,pair<int,DVEntry>> &values, const char *key, double v, int testnr)
 {
     int offset;
@@ -270,6 +293,18 @@ void test_dvparser()
     dv_entries.clear();
     tst_parse("426C FE04", &dv_entries, testnr);
     tst_date(dv_entries, "426C", "2007-04-30 00:00:00", testnr); // 2010-dec-31
+}
+
+void test_ixmlparser()
+{
+    map<string,pair<int,DVEntry>> dv_entries;
+
+    int testnr = 1;
+    tst_ixmlparse("10351F0400",
+                  "decode = total. -hex  = ['A'-'F';'0'-'9']. -byte = hex, hex. -word = byte, byte. -quad = byte, byte, byte, byte. total     = @int32, @volume, @m3, -'10', quad. int32>dif=+'int32'. volume>vif_range=+'Volume'. m3>unit=+'l'.",
+                  &dv_entries, testnr);
+
+    tst_double(dv_entries, "0413", 270.133, testnr);
 }
 
 void test_devices()

@@ -20,6 +20,7 @@
 
 #include"util.h"
 #include"units.h"
+#include"xmq.h"
 
 #include<map>
 #include<set>
@@ -523,6 +524,13 @@ bool parseDV(Telegram *t,
              std::vector<uchar>::iterator *format = NULL,
              size_t format_len = 0,
              uint16_t *format_hash = NULL);
+
+// Use an ixml grammar to decode a manufacturer specific block of bytes.
+// hex: a string with uppercase hex "12AB12FF"
+// An ixml grammar document is loaded with  xmqParseBufferWithType with the XMQContentType::CONTENT_IXML
+bool parseWithIXML(std::string hex,
+                   XMQDoc *ixml_grammar,
+                   std::map<std::string,std::pair<int,DVEntry>> *dv_entries);
 
 // Instead of using a hardcoded difvif as key in the extractDV... below,
 // find an existing difvif entry in the values based on the desired value information type.

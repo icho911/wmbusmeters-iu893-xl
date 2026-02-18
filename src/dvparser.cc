@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2018-2024 Fredrik Öhrström (gpl-3.0-or-later)
+ Copyright (C) 2018-2026 Fredrik Öhrström (gpl-3.0-or-later)
 
  This program is free software: you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -578,6 +578,104 @@ bool parseDV(Telegram *t,
     }
 
     return true;
+}
+
+int difNameToNr(const char *dif)
+{
+    if (!strcmp(dif, "int8")) return 0x1;
+    if (!strcmp(dif, "int16")) return 0x2;
+    if (!strcmp(dif, "int24")) return 0x3;
+    if (!strcmp(dif, "int32")) return 0x4;
+    if (!strcmp(dif, "real32")) return 0x5;
+    if (!strcmp(dif, "int48")) return 0x6;
+    if (!strcmp(dif, "int64")) return 0x7;
+    if (!strcmp(dif, "bcd2")) return 0x9;
+    if (!strcmp(dif, "bcd4")) return 0xA;
+    if (!strcmp(dif, "bcd6")) return 0xB;
+    if (!strcmp(dif, "bcd8")) return 0xC;
+    if (!strcmp(dif, "bcd12")) return 0xE;
+    return 0;
+}
+
+int measurementTypeToNr(const char *mt)
+{
+    if (!strcmp(mt, "Instantaneous")) return 0x00;
+    if (!strcmp(mt, "Maximum")) return 0x10;
+    if (!strcmp(mt, "Minimum")) return 0x20;
+    if (!strcmp(mt, "ValueDuringErrorState")) return 0x20;
+    return 0;
+}
+
+int vifRangeAndUnitToNr(const char *vif_range, const char *unit)
+{
+    if (!strcmp(vif_range, "Volume"))
+    {
+        if (!strcmp(unit, "m3"))
+        {
+            return 0x16;
+        }
+        if (!strcmp(unit, "l"))
+        {
+            return 0x13;
+        }
+    }
+    return 0;
+}
+
+string generate_dif_vif_key(const char *dif, const char *vif_range, const char *unit)
+{
+    int dif_byte = difNameToNr(dif);
+    int vif_byte = vifRangeAndUnitToNr(vif_range, unit);
+
+    return tostrprintf("%02X%02X", dif_byte, vif_byte);
+}
+
+XMQProceed add_value(XMQDoc *doc, XMQNode *node, void *user_data)
+{
+    map<string,pair<int,DVEntry>> *dv_entries = (map<string,pair<int,DVEntry>>*)user_data;
+    const char *dif = xmqGetStringRel(doc, "@dif", node);
+    const char *vif_range = xmqGetStringRel(doc, "@vif_range", node);
+    const char *unit = xmqGetStringRel(doc, "@unit", node);
+    const char *hex = xmqGetStringRel(doc, ".", node);
+
+    int vif = vifRangeAndUnitToNr(vif_range, unit);
+
+    string key = generate_dif_vif_key(dif, vif_range, unit);
+    string value = hex;
+    (*dv_entries)[key] = { 1000, DVEntry(1000,
+                                         key,
+                                         MeasurementType::Instantaneous,
+                                         Vif(vif),
+                                         {},
+                                         {},
+                                         StorageNr(0),
+                                         TariffNr(0),
+                                         SubUnitNr(0),
+                                         value) };
+
+    return XMQ_CONTINUE;
+}
+
+bool parseWithIXML(std::string hex,
+                   XMQDoc *ixml_grammar,
+                   std::map<std::string,std::pair<int,DVEntry>> *dv_entries)
+{
+    XMQDoc *decode = xmqNewDoc();
+    bool b = xmqParseBufferWithIXML(decode,
+                                    hex.c_str(),
+                                    NULL,
+                                    ixml_grammar,
+                                    0);
+
+    xmqForeach(decode, "//*[@dif]", add_value, dv_entries);
+
+/*    XMQOutputSettings *os = xmqNewOutputSettings();
+    xmqSetupPrintStdOutStdErr(os);
+    xmqPrint(decode, os);
+    xmqFreeOutputSettings(os); */
+    xmqFreeDoc(decode);
+
+    return b;
 }
 
 bool hasKey(std::map<std::string,std::pair<int,DVEntry>> *dv_entries, std::string key)

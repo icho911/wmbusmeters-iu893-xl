@@ -139,29 +139,6 @@ typedef enum XMQColor {
     COLOR_ns_override_xsl,
 } XMQColor;
 
-/**
-   XMQColorName:
-
-   The actual number of colors are fewer than the number of tokens
-   since we reuse colors for several tokens, no need to have different
-   colors for left and right compound parentheses.
-*/
-typedef enum XMQColorName {
-    XMQ_COLOR_C, // Comment
-    XMQ_COLOR_Q, // Quote
-    XMQ_COLOR_E, // Entity
-    XMQ_COLOR_NS, // Name Space (both for element and attribute)
-    XMQ_COLOR_EN, // Element Name
-    XMQ_COLOR_EK, // Element Key
-    XMQ_COLOR_EKV, // Element Key Value
-    XMQ_COLOR_AK, // Attribute Key
-    XMQ_COLOR_AKV, // Attribute Key Value
-    XMQ_COLOR_CP, // Compound Parentheses
-    XMQ_COLOR_NSD, // Name Space Declaration xmlns
-    XMQ_COLOR_UW, // Unicode whitespace
-    XMQ_COLOR_XLS, // Override XLS element names with this color.
-} XMQColorName;
-
 #define XMQ_COLOR_NAMES \
     X(C) \
     X(Q) \
@@ -1953,7 +1930,7 @@ extern void yaepFreeTree(YaepTreeNode *root,
 /* Terminals are stored a in term set using bits in a bit array.
    The array consists of long ints, typedefed as terminal_bitset_el_t.
    A long int is 8 bytes, ie 64 bits. */
-typedef long int terminal_bitset_t;
+typedef unsigned long int terminal_bitset_t;
 
 /* Calculate the number of required term set elements from the number of bits we want to store. */
 #define CALC_NUM_ELEMENTS(num_bits) ((num_bits+CHAR_BIT*sizeof(terminal_bitset_t)-1)/(CHAR_BIT*sizeof(terminal_bitset_t)))
@@ -3594,6 +3571,7 @@ void create_node(XMQParseState *state, const char *start, const char *stop);
 void update_namespace_href(XMQParseState *state, xmlNsPtr ns, const char *start, const char *stop);
 xmlNodePtr create_quote(XMQParseState *state, size_t l, size_t col, const char *start, const char *stop, const char *suffix,  xmlNodePtr parent);
 void debug_content_comment(XMQParseState *state, size_t line, size_t start_col, const char *start, const char *stop, const char *suffix);
+void debug_content_comment_continuation(XMQParseState *state, size_t line, size_t start_col, const char *start, const char *stop, const char *suffix);
 void debug_content_value(XMQParseState *state, size_t line, size_t start_col, const char *start, const char *stop, const char *suffix);
 void debug_content_quote(XMQParseState *state, size_t line, size_t start_col, const char *start, const char *stop, const char *suffix);
 void do_attr_key(XMQParseState *state, size_t line, size_t col, const char *start, const char *stop, const char *suffix);
@@ -3651,6 +3629,7 @@ void cline_print_attributes(XMQPrintState *ps, xmlNode *node);
 void cline_print_attr(XMQPrintState *ps, xmlAttr *a);
 bool write_print_stderr(void *writer_state_ignored, const char *start, const char *stop);
 bool write_print_stdout(void *writer_state_ignored, const char *start, const char *stop);
+bool write_print_memory(void *writer_state_ignored, const char *start, const char *stop);
 void write_safe_html(XMQWrite write, void *writer_state, const char *start, const char *stop);
 void write_safe_tex(XMQWrite write, void *writer_state, const char *start, const char *stop);
 bool xmqVerbose();
@@ -3860,6 +3839,7 @@ void setup_html_coloring(XMQOutputSettings *os, XMQTheme *theme, bool dark_mode,
         MemBuffer *style_pre = new_membuffer();
 
         membuffer_append(style_pre,
+
                          "@media screen and (orientation: portrait) { pre { font-size: 2vw; } }"
                          "@media screen and (orientation: landscape) { pre { max-width: 98%; } }"
                          "pre.xmq_dark {white-space:pre-wrap;word-break:break-all;border-radius:2px;background-color:#263338;border:solid 1px #555555;display:inline-block;padding:1em;color:white;}\n"
@@ -4134,7 +4114,7 @@ void xmqRenderHtmlSettings(XMQOutputSettings *settings,
     if (use_class) settings->use_class = use_class;
 }
 
-void xmqOverrideColor(XMQOutputSettings *os, const char *render_style, XMQSyntax sy, const char *pre, const char *post, const char *ns)
+void xmqOverrideColor(XMQOutputSettings *os, const char *render_style, XMQColorName cn, const char *pre, const char *post, const char *ns)
 {
     //
 }
@@ -4377,15 +4357,21 @@ void xmqSetupPrintStdOutStdErr(XMQOutputSettings *ps)
     ps->error.write = write_print_stderr;
 }
 
+bool write_print_memory(void *writer_state_ignored, const char *start, const char *stop)
+{
+    membuffer_append_region((MemBuffer*)writer_state_ignored, start, stop);
+    return true;
+}
+
 void xmqSetupPrintMemory(XMQOutputSettings *os, char **start, char **stop)
 {
     os->output_buffer_start = start;
     os->output_buffer_stop = stop;
     os->output_buffer = new_membuffer();
     os->content.writer_state = os->output_buffer;
-    os->content.write = (XMQWrite)(void*)membuffer_append_region;
+    os->content.write = write_print_memory;
     os->error.writer_state = os->output_buffer;
-    os->error.write = (XMQWrite)(void*)membuffer_append_region;
+    os->error.write = write_print_memory;
 }
 
 void xmqSetupPrintSkip(XMQOutputSettings *os, size_t *skip)
@@ -4809,34 +4795,44 @@ char *xmq_un_comment(const char *start, const char *stop)
     assert(start < stop);
 
     const char *i = start;
+
+    // Eat slashes.
     while (i < stop && *i == '/') i++;
 
-    if (i == stop)
+    if (i == stop || *i != '*')
     {
-        // Single line all slashes. Drop the two first slashes which are the single line comment.
-        return xmq_trim_quote(start+2, stop, true, true);
-    }
-
-    if (*i != '*')
-    {
-        // No asterisk * after the slashes. This is a single line comment.
+        // No asterisk * after the slashes. This is a single line comment //.....
+        i = start+2;
         // If there is a space after //, skip it.
-        if (*i == ' ') {
-            i++;
-        }
+        if (*i == ' ') i++;
         // Remove trailing spaces.
         while (i < stop && *(stop-1) == ' ') stop--;
         assert(i <= stop);
         return xmq_trim_quote(i, stop, true, true);
     }
 
-    // There is an asterisk after the slashes. A standard /* */ comment
-    // Remove the surrounding / slashes.
-    size_t j = 0;
-    while (*(start+j) == '/' && *(stop-j-1) == '/' && (start+j) < (stop-j)) j++;
+    // Continue to eat slashes.
+    while (i < stop && *i == '/') i++;
 
-    start = start+j;
-    stop = stop-j;
+    if (i == start)
+    {
+        // The asterisk is first, this is a comment continuation.
+        // Remove the ending / slashes.
+        while (*(stop-1) == '/' && stop > start) stop--;
+    }
+    else
+    {
+        // There is an asterisk after the slashes. A standard /* */ comment
+        // Remove the surrounding / slashes.
+        size_t j = 0;
+        while (*(start+j) == '/' && *(stop-j-1) == '/' && (start+j) < (stop-j))
+        {
+            j++;
+        }
+
+        start = start+j;
+        stop = stop-j;
+    }
 
     // Check that the star is there.
     assert(*start == '*' && *(stop-1) == '*');
@@ -5179,6 +5175,22 @@ void debug_content_comment(XMQParseState *state,
     free(trimmed);
 }
 
+void debug_content_comment_continuation(XMQParseState *state,
+                                        size_t line,
+                                        size_t start_col,
+                                        const char *start,
+                                        const char *stop,
+                                        const char *suffix)
+{
+    char *trimmed = xmq_un_comment(start, stop);
+    char *tmp = xmq_quote_as_c(trimmed, trimmed+strlen(trimmed), false);
+    WRITE_ARGS("{comment_continuation \"", NULL);
+    WRITE_ARGS(tmp, NULL);
+    WRITE_ARGS("\"}", NULL);
+    free(tmp);
+    free(trimmed);
+}
+
 void xmqSetupParseCallbacksDebugContent(XMQParseCallbacks *callbacks)
 {
     memset(callbacks, 0, sizeof(*callbacks));
@@ -5186,6 +5198,7 @@ void xmqSetupParseCallbacksDebugContent(XMQParseCallbacks *callbacks)
     callbacks->handle_attr_value_text = debug_content_value;
     callbacks->handle_quote = debug_content_quote;
     callbacks->handle_comment = debug_content_comment;
+    callbacks->handle_comment_continuation = debug_content_comment_continuation;
     callbacks->handle_element_value_quote = debug_content_quote;
     callbacks->handle_element_value_compound_quote = debug_content_quote;
     callbacks->handle_attr_value_quote = debug_content_quote;
@@ -7924,10 +7937,31 @@ void collect_text(YaepTreeNode *n, MemBuffer *mb)
     if (n->type == YAEP_ANODE)
     {
         YaepAbstractNode *an = &n->val.anode;
-        for (int i=0; an->children[i] != NULL; ++i)
+        if (an->name[0] == '|' && an->name[1] == '+')
         {
-            YaepTreeNode *nn = an->children[i];
-            collect_text(nn, mb);
+            // The content to be inserted has been encoded in the rule name.
+            // A hack yes. Does it work? Yes!
+            if(an->name[2] == '#')
+            {
+                int value = (int)strtol(an->name+3, NULL, 16);
+                UTF8Char utf8;
+                size_t len = encode_utf8(value, &utf8);
+                utf8.bytes[len] = 0;
+                membuffer_append(mb, utf8.bytes);
+            }
+            else
+            {
+                membuffer_append(mb, an->name+2);
+            }
+        }
+        else
+        {
+            // Normal node, recurse into it.
+            for (int i=0; an->children[i] != NULL; ++i)
+            {
+                YaepTreeNode *nn = an->children[i];
+                collect_text(nn, mb);
+            }
         }
     }
     else
@@ -8230,7 +8264,7 @@ char *xmqCompactQuote(const char *content)
     xmlNode node;
     memset(&node, 0, sizeof(node));
     node.content = (xmlChar*)content;
-    print_value(&ps , &node, LEVEL_ATTR_VALUE);
+    print_value(&ps , &node, LEVEL_ELEMENT_VALUE);
 
     membuffer_append_null(mb);
 
@@ -9573,6 +9607,9 @@ MemBuffer *new_membuffer()
     MemBuffer *mb = (MemBuffer*)malloc(sizeof(MemBuffer));
     check_malloc(mb);
     memset(mb, 0, sizeof(*mb));
+    mb->buffer_ = (char*)malloc(1024);
+    mb->max_ = 1024;
+    mb->used_ = 0;
     return mb;
 }
 
@@ -9589,6 +9626,7 @@ void free_membuffer_and_free_content(MemBuffer *mb)
 {
     if (mb->buffer_) free(mb->buffer_);
     mb->buffer_ = NULL;
+    mb->used_ = mb->max_ = 0;
     free(mb);
 }
 
@@ -9596,6 +9634,7 @@ void membuffer_reuse(MemBuffer *mb, char *start, size_t len)
 {
     if (mb->buffer_) free(mb->buffer_);
     mb->buffer_ = start;
+    assert(mb->buffer_ != NULL);
     mb->used_ = mb->max_ = len;
 }
 
@@ -9626,6 +9665,7 @@ void membuffer_append_region(MemBuffer *mb, const char *start, const char *stop)
     if (max > mb->max_)
     {
         mb->buffer_ = (char*)realloc(mb->buffer_, max);
+        check_malloc(mb->buffer_);
         mb->max_ = max;
     }
     memcpy(mb->buffer_+mb->used_, start, add);
@@ -9634,8 +9674,13 @@ void membuffer_append_region(MemBuffer *mb, const char *start, const char *stop)
 
 void membuffer_append(MemBuffer *mb, const char *start)
 {
+    // Check if empty string, then do nothing.
+    if (*start == 0) return;
+
     const char *i = start;
     char *to = mb->buffer_+mb->used_;
+    assert(mb->buffer_ != NULL);
+    assert(mb->max_ > 0);
     const char *stop = mb->buffer_+mb->max_;
 
     while (*i)
@@ -9646,6 +9691,7 @@ void membuffer_append(MemBuffer *mb, const char *start)
             size_t max = pick_buffer_new_size(mb->max_, mb->used_, 1);
             assert(max >= mb->max_);
             mb->buffer_ = (char*)realloc(mb->buffer_, max);
+            check_malloc(mb->buffer_);
             mb->max_ = max;
             stop = mb->buffer_+mb->max_;
             to = mb->buffer_+mb->used_;
@@ -9663,6 +9709,7 @@ void membuffer_append_char(MemBuffer *mb, char c)
     if (max > mb->max_)
     {
         mb->buffer_ = (char*)realloc(mb->buffer_, max);
+        check_malloc(mb->buffer_);
         mb->max_ = max;
     }
     memcpy(mb->buffer_+mb->used_, &c, 1);
@@ -9676,6 +9723,7 @@ void membuffer_append_int(MemBuffer *mb, int i)
     if (max > mb->max_)
     {
         mb->buffer_ = (char*)realloc(mb->buffer_, max);
+        check_malloc(mb->buffer_);
         mb->max_ = max;
     }
     memcpy(mb->buffer_+mb->used_, &i, sizeof(i));
@@ -9721,6 +9769,7 @@ void membuffer_append_pointer(MemBuffer *mb, void *ptr)
     if (max > mb->max_)
     {
         mb->buffer_ = (char*)realloc(mb->buffer_, max);
+        check_malloc(mb->buffer_);
         mb->max_ = max;
     }
     memcpy(mb->buffer_+mb->used_, &ptr, sizeof(ptr));
@@ -20074,6 +20123,8 @@ YaepSymbol *symb_add_terminal(YaepParseState *ps, const char*name, int code)
     YaepSymbol symb, *result;
     hash_table_entry_t *repr_entry, *code_entry;
 
+    memset(&symb, 0, sizeof(symb));
+
     symb.repr = name;
     if (code >= 32 && code <= 126)
     {
@@ -20116,7 +20167,10 @@ YaepSymbol *symb_add_nonterm(YaepParseState *ps, const char *name)
     YaepSymbol symb,*result;
     hash_table_entry_t*entry;
 
+    memset(&symb, 0, sizeof(symb));
+
     symb.repr = name;
+
     strncpy(symb.hr, name, 6);
 
     symb.is_terminal = false;
@@ -22709,6 +22763,12 @@ static void setup_set_matched_lengths_hash(hash_table_entry_t s)
     unsigned result = jauquet_prime_mod32;
 
     int *i = set->matched_lengths;
+    if (num_matched_lengths == 0 || i == NULL)
+    {
+        set->matched_lengths_hash = 0;
+        return;
+    }
+
     int *stop = i + num_matched_lengths;
 
     while (i < stop)
@@ -24513,7 +24573,7 @@ static YaepStateSetTermLookAhead *lookup_cached_set_term_lookahead(YaepParseStat
                 {
                     YaepSymbol *lookahead_symb = symb_find_by_term_id(ps, new_set_term_lookahead->lookahead_term);
                     const char *losymb = "";
-                    if (lookahead_symb && lookahead_symb->hr) losymb = lookahead_symb->hr;
+                    if (lookahead_symb) losymb = lookahead_symb->hr;
 
                     yaep_trace(ps, "found stlg [s%d %s %s] -> s%d",
                                new_set_term_lookahead->set->id,
@@ -24561,7 +24621,7 @@ static void save_cached_set(YaepParseState *ps, YaepStateSetTermLookAhead *entry
     {
         YaepSymbol *lookahead_symb = symb_find_by_term_id(ps, entry->lookahead_term);
         const char *losymb = "";
-        if (lookahead_symb && lookahead_symb->hr) losymb = lookahead_symb->hr;
+        if (lookahead_symb) losymb = lookahead_symb->hr;
         yaep_trace(ps, "store stlg [s%d %s %s] -> s%d",
                    entry->set->id,
                    entry->term->hr,
@@ -24687,7 +24747,7 @@ static void *parse_alloc_default(int nmemb)
 
     assert(nmemb > 0);
 
-    result = malloc(nmemb);
+    result = calloc(1, nmemb);
     if (result == NULL)
     {
         exit(1);

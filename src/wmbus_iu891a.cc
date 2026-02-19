@@ -50,6 +50,7 @@ struct DeviceInfo_IU891A
         if (module_type == 0x6d) s+="im891a ";
         else if (module_type == 0x6e) s+="iu891a ";
         else if (module_type == 0xa3) s+="im881 ";
+        else if (module_type == 12f3) s+="iu893a ";
         else s+="unknown_type("+mt+") ";
 
         string ss;
